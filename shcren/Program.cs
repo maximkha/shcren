@@ -6,8 +6,8 @@ namespace shcren
     {
         public static void Main(string[] args)
         {
-            Console.WriteLine("Welcome to the shcren utility");
-
+            //Console.WriteLine("Welcome to the shcren utility");
+            Console.WriteLine(Console.CursorLeft);
         }
     }
 }
