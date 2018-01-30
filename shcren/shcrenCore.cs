@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Xml.Serialization;
 using System.Threading;
+using System.Timers;
 
 namespace shcren
 {
@@ -31,6 +32,7 @@ namespace shcren
 
             public string getStatus()
             {
+                //return "Online";
                 if (!online()) return "Offline";
                 if (taskList.Count == 0) return "Idle";
                 if (taskList.All(x=>x.status=="Stopped")) return "Idle";
@@ -168,56 +170,173 @@ namespace shcren
         public class cliSession
         {
             session selectedSession;
+            System.Timers.Timer infoBarUpdater;
+            int infoBarHeight = -1;
+            bool serverSelected = false;
+            int selectedServer = -1;
 
-            public cliSession()
+            public void start()
             {
-                bool skipLoad = false;
-                Console.WriteLine("Welcome to the shcrenCore CLI version {0}", version);
-                if(!File.Exists("currentSession.xml"))
-                {
-                    Console.WriteLine("No session found!");
-                    int option = ui.selectMenu1(new string[] {"Create", "Exit"}, new char[] {'C', 'E'});
+				bool skipLoad = false;
+				Console.WriteLine("Welcome to the shcrenCore CLI version {0}", version);
+				if (!File.Exists("currentSession.xml"))
+				{
+					Console.WriteLine("No session found!");
+					int option = ui.selectMenu1(new string[] { "Create", "Exit" }, new char[] { 'C', 'E' });
 
-                    if(option == 0)
-                    {
-                        Console.WriteLine("Creating!");
-                        selectedSession = new session();
-                        utilities.saveSessionXML("currentSession.xml", selectedSession);
-                        skipLoad = true;
-                    }
+					if (option == 0)
+					{
+						Console.WriteLine("Creating!");
+						selectedSession = new session();
+						utilities.saveSessionXML("currentSession.xml", selectedSession);
+						skipLoad = true;
+					}
 
 					if (option == 1)
 					{
 						Console.WriteLine("Bye!");
-                        Thread.Sleep(500);
-                        Environment.Exit(1);
+						Thread.Sleep(500);
+						Environment.Exit(1);
 					}
-                }
+				}
 
-                if(!skipLoad)
-                {
-                    Console.WriteLine("Loading last session");
-                    selectedSession = utilities.loadSessionXML("currentSession.xml");
-                }
+				if (!skipLoad)
+				{
+					Console.WriteLine("Loading last session");
+					selectedSession = utilities.loadSessionXML("currentSession.xml");
+				}
 
-                terminal();
+                infoBarUpdater = new System.Timers.Timer(30 * 1000);
+                infoBarUpdater.Elapsed += updateBridge;
+                infoBarUpdater.Start();
+
+                infoBarHeight = selectedSession.serverList.Count + 2;
+
+                ui.terminal.clearConsole();
+                drawInfoBar();
+				terminal();
             }
 
             public void terminal()
             {
-                ui.terminal.reset();
-                //Draw top server info bar
-                //draw border
-                //Draw command window
+				Console.SetCursorPosition(0, infoBarHeight);
+                while(true)
+                {
+                    Console.Write(">");
+                    string comm = Console.ReadLine();
+                    Console.WriteLine(command(comm));
+                    if(comm=="exit")
+                    {
+						Console.WriteLine("Bye!");
+						Thread.Sleep(500);
+                        return;
+                    }
+                    if(ui.terminal.isScrolling())
+                    {
+                        ui.terminal.clearLines(infoBarHeight, Console.WindowHeight);
+                        Console.SetCursorPosition(0, infoBarHeight);
+                    }
+                }
             }
 
-            public void command(string comm)
+            public string command(string comm)
             {
-                switch (comm)
+                switch (comm.Split(' ')[0])
                 {
-                    default:
-                        break;
-               }
+                    case "select":
+                        if (comm.Split(' ').Length <= 1) return "Specify server";
+                        if (!int.TryParse(comm.Split(' ')[1], out int n)) return comm.Split(' ')[1] + " is not a valid server id";
+                        int t = Convert.ToInt32(comm.Split(' ')[1]);
+                        if (!utilities.isInRange(0, selectedSession.serverList.Count, t)) return t + " is not a valid option";
+                        selectedServer = t;
+                        serverSelected = true;
+                        return "OK";
+
+                    case "return":
+                        if (!serverSelected) return "Can't exit server view when server wasn't selected";
+                        serverSelected = false;
+                        return "OK";
+
+                    case "task":
+                        if(comm.Split(' ')[1].ToLower() != "all" && !int.TryParse(comm.Split(' ')[1], out int n2))
+                            return comm.Split(' ')[1] + " is not a valid server id";
+
+                        switch (comm.Split(' ')[2].ToLower())
+                        {
+                            case "add":
+								Console.Write("Command to run>");
+								string inp = Console.ReadLine();
+								if (inp == "e") return "Aborted!";
+
+                                if(comm.Split(' ')[1].ToLower() == "all")
+                                {
+                                    for (int i = 0; i < selectedSession.serverList.Count; i++)
+                                    {
+                                        selectedSession.serverList[i].submitTask(inp);
+                                    }
+                                } else {
+                                    int taskServer = Convert.ToInt32(comm.Split(' ')[1]);
+                                    selectedSession.serverList[taskServer].submitTask(inp);
+                                }
+                                return "OK";
+
+
+                            default:
+                                return "Unknown modifier: " + comm.Split(' ')[2].ToLower();
+                        }
+                        return "OK";
+    				default:
+                        return "";
+                }
+            }
+
+            public void updateBridge(Object source, ElapsedEventArgs e)
+            {
+                drawInfoBar();
+            }
+
+            public void drawInfoBar()
+            {
+                if(!serverSelected)
+                {
+					ui.terminal.clearLines(0, infoBarHeight);
+                    infoBarHeight = selectedSession.serverList.Count + 2;
+                    for (int i = 0; i < selectedSession.serverList.Count; i++)
+                    {
+						server s = selectedSession.serverList[i];
+						s.updateTasks();
+						string stat = s.getStatus();
+                        Console.Write(i);
+						Console.Write(" [");
+						if (stat == "Offline") Console.ForegroundColor = ConsoleColor.DarkRed;
+						if (stat == "Idle") Console.ForegroundColor = ConsoleColor.DarkYellow;
+						if (stat == "Running") Console.ForegroundColor = ConsoleColor.Green;
+						Console.Write("*");
+						Console.ResetColor();
+						Console.Write("] " + utilities.ipFromSshAddr(s.sshAddress) + "(" + stat + ")");
+                    }
+                    Console.WriteLine("Last Updated: " + DateTime.Now.ToString("h:mm:ss tt"));
+					ui.terminal.dividerBarCurrentLine();
+                } else {
+                    ui.terminal.clearLines(0, infoBarHeight);
+                    infoBarHeight = selectedSession.serverList[selectedServer].taskList.Count + 5;
+                    Console.WriteLine("Server(" + selectedServer + "): " + utilities.ipFromSshAddr(selectedSession.serverList[selectedServer].sshAddress));
+                    Console.Write("Cpu: ");
+                    ui.terminal.progressBar(selectedSession.serverList[selectedServer].getCpuPercent(), (int)Math.Round((double)Console.WindowWidth / 4));
+                    Console.CursorTop++;
+					Console.Write("Mem: ");
+					ui.terminal.progressBar(selectedSession.serverList[selectedServer].getCpuPercent(), (int)Math.Round((double)Console.WindowWidth / 4));
+                    Console.WriteLine("[Tasks]");
+                    for (int i = 0; i < selectedSession.serverList[selectedServer].taskList.Count; i++)
+                    {
+                        Console.WriteLine("(" + i + ") " + selectedSession.serverList[selectedServer].taskList[i].comm 
+                                          + " [" + selectedSession.serverList[selectedServer].taskList[i].status + "] PID: " 
+                                         + selectedSession.serverList[selectedServer].taskList[i].lastPID);
+                    }
+
+					Console.WriteLine("Last Updated: " + DateTime.Now.ToString("h:mm:ss tt"));
+					ui.terminal.dividerBarCurrentLine();
+                }
             }
         }
 
@@ -286,92 +405,95 @@ namespace shcren
 					serializer.Serialize(fileStream, sessionToSave);
 				}
             }
+
+			public static bool isInRange(int l, int t, int i)
+			{
+				if (i > t) return false;
+				if (l > i) return false;
+				return true;
+			}
         }
 
 		public static class ui
 		{
-			public static int selectMenu1(string[] options, char[] abreviations)
+			public static int selectMenu1(string[] options, char[] _abreviations)
 			{
-				while (true)
+                char[] abreviations = new char[_abreviations.Length];
+                for (int i = 0; i < _abreviations.Length; i++)
+                    abreviations[i] = Char.ToLower(_abreviations[i]);
+
+                while (true)
 				{
-					terminal.write("Select ");
+					Console.Write("Select ");
 					for (int i = 0; i < options.Length; i++)
 					{
-						terminal.write("(" + abreviations[i] + ")" + options[i].Substring(abreviations.Length - 1));
-						if (i != options.Length - 1) terminal.write("/");
+						Console.Write("(" + _abreviations[i] + ")" + options[i].Substring(abreviations.Length - 1));
+						if (i != options.Length - 1) Console.Write("/");
 					}
-					terminal.write("? ");
+					Console.Write("? ");
 					char selected = Console.ReadKey().KeyChar;
-					terminal.writeline("");
+					Console.WriteLine("");
 					if (abreviations.Contains(selected)) return Array.IndexOf(abreviations, selected);
-					terminal.writeline(selected + " is not a valid option!");
+					Console.WriteLine(selected + " is not a valid option!");
 				}
 			}
 
 			public static class terminal
 			{
-				public static int currentxPos = 0;
-				public static int currentyPos = 0;
-				public static int swapx = 0;
-				public static int swapy = 0;
-                public static bool isSwaped = false;
-
-				public static void ClearCurrentConsoleLine()
+				public static void clearCurrentLine()
 				{
 					int currentLineCursor = Console.CursorTop;
 					Console.SetCursorPosition(0, Console.CursorTop);
-					Console.Write(new string(' ', Console.WindowWidth));
+                    Console.Write(new string(' ', Console.WindowWidth));
 					Console.SetCursorPosition(0, currentLineCursor);
 				}
 
-				public static void reset()
-				{
-					Console.Clear();
-					currentxPos = 0;
-					currentyPos = 0;
-				}
-
-				public static void fullReset()
-				{
-					reset();
-					swapx = currentxPos;
-					swapy = currentyPos;
-				}
-
-				public static void write(string str)
-				{
-					Console.Write(str);
-				}
-
-				public static void writeline(string str)
-				{
-					Console.WriteLine(str);
-                    if(isSwaped)
-                        swapy++;
-                    if (!isSwaped)
-                        currentyPos++;
-				}
-
-                public static void swap()
+                public static void dividerBarCurrentLine()
                 {
-                    if(isSwaped)
-                    {
-                        swapy = Console.CursorTop;
-                        swapx = Console.CursorLeft;
-                        Console.SetCursorPosition(currentxPos, currentyPos);
-                    } else {
-						currentyPos = Console.CursorTop;
-						currentxPos = Console.CursorLeft;
-                        Console.SetCursorPosition(swapx, swapy);
-                    }
-                    isSwaped = !isSwaped;
+					int currentLineCursor = Console.CursorTop;
+					Console.SetCursorPosition(0, Console.CursorTop);
+					Console.Write(new string('=', Console.WindowWidth));
+					Console.SetCursorPosition(0, currentLineCursor);
                 }
 
                 public static bool isScrolling()
                 {
-                    return Console.CursorTop >= Console.WindowHeight;
+                    //Console.WriteLine(Console.CursorTop + ", " + (Console.WindowHeight-3));
+                    return Console.CursorTop >= Console.WindowHeight-1;
+                }
+
+                public static void clearLines(int y1, int y2)
+                {
+                    int currentLineCursor = Console.CursorTop;
+                    for (int i = y1; i < y2; i++)
+                    {
+                        Console.SetCursorPosition(0, i);
+                        clearCurrentLine();
+                    }
+                    Console.SetCursorPosition(0, currentLineCursor);
+                }
+
+                public static void clearConsole()
+                {
+                    Console.SetCursorPosition(0, 0);
+                    clearLines(0, Console.WindowHeight);
+                }
+
+                public static void progressBar(double percent, int width)
+                {
+                    //clearCurrentLine();
+                    int screenAvail = width - (percent.ToString().Length + 3); //for each bracket, % sign and the double lenght
+                    double scaleFactor = (double)screenAvail / 100;
+                    int realVal = (int)Math.Round(percent * scaleFactor);
+                    //Console.WriteLine(scaleFactor);
+                    Console.Write("[" + new string('#', realVal) + new string(' ', screenAvail - realVal) + "]" + percent + "%");
                 }
 			}
+
+            public static class updater
+            {
+                
+            }
 		}
     }
 }
