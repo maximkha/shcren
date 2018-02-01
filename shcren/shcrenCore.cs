@@ -241,53 +241,85 @@ namespace shcren
 
             public string command(string comm)
             {
-                switch (comm.Split(' ')[0])
+                string[] pts = comm.Split(' ');
+                if (pts[0].ToLower() == "task")
                 {
-                    case "select":
-                        if (comm.Split(' ').Length <= 1) return "Specify server";
-                        if (!int.TryParse(comm.Split(' ')[1], out int n)) return comm.Split(' ')[1] + " is not a valid server id";
-                        int t = Convert.ToInt32(comm.Split(' ')[1]);
-                        if (!utilities.isInRange(0, selectedSession.serverList.Count, t)) return t + " is not a valid option";
-                        selectedServer = t;
-                        serverSelected = true;
-                        return "OK";
+                    if (!(pts.Length > 1)) return "Needs secondary modifier";
+                    if (!(pts.Length > 2)) return "Needs server id";
+                    List<server> affectedServers = utilities.listStringSubset(selectedSession.serverList, pts[2]);
+                    if (affectedServers == null) return "Invalid server id";
 
-                    case "return":
-                        if (!serverSelected) return "Can't exit server view when server wasn't selected";
-                        serverSelected = false;
-                        return "OK";
+                    foreach (server affected in affectedServers)
+                        if (affected.getStatus() == "Offline") return "Cannot preform task on offline server " + utilities.ipFromSshAddr(affected.sshAddress);
 
-                    case "task":
-                        if(comm.Split(' ')[1].ToLower() != "all" && !int.TryParse(comm.Split(' ')[1], out int n2))
-                            return comm.Split(' ')[1] + " is not a valid server id";
-
-                        switch (comm.Split(' ')[2].ToLower())
+                    if (pts[1].ToLower() == "add")
+                    {
+                        //task add [server ID] [command]
+                        if (!(pts.Length > 3)) return "Needs command to run";
+                        foreach (server affected in affectedServers)
                         {
-                            case "add":
-								Console.Write("Command to run>");
-								string inp = Console.ReadLine();
-								if (inp == "e") return "Aborted!";
-
-                                if(comm.Split(' ')[1].ToLower() == "all")
-                                {
-                                    for (int i = 0; i < selectedSession.serverList.Count; i++)
-                                    {
-                                        selectedSession.serverList[i].submitTask(inp);
-                                    }
-                                } else {
-                                    int taskServer = Convert.ToInt32(comm.Split(' ')[1]);
-                                    selectedSession.serverList[taskServer].submitTask(inp);
-                                }
-                                return "OK";
-
-
-                            default:
-                                return "Unknown modifier: " + comm.Split(' ')[2].ToLower();
+                            affected.submitTask(pts[3]);
+                            Console.WriteLine("Submitted task to server: " + utilities.ipFromSshAddr(affected.sshAddress));
                         }
-                        return "OK";
-    				default:
-                        return "";
+                    }
+                    else if (pts[1].ToLower() == "delete")
+                    {
+                        //task delete [server ID] [TaskID]
+                        if (!(pts.Length > 3)) return "Needs task id";
+                        List<int> affectedTasks = utilities.listStringSubset(utilities.countUp(0, selectedSession.serverList.Max(x => x.taskList.Count)), pts[3]);
+                        if (affectedServers == null) return "Invalid task id";
+                        foreach (server affected in affectedServers)
+                            foreach (int taskID in affectedTasks)
+                                if (!utilities.isInRange(0, affected.taskList.Count, taskID))
+                                    return "Server " + utilities.ipFromSshAddr(affected.sshAddress) + " did not have task id " + taskID;
+
+                        foreach (server affected in affectedServers)
+                        {
+                            foreach (int taskID in affectedTasks)
+                                affected.deleteTask(taskID);
+                            Console.WriteLine("Deleted " + affectedTasks.Count + " task(s) from server: " + utilities.ipFromSshAddr(affected.sshAddress));
+                        }
+                    }
+                    else if (pts[1].ToLower() == "ack")
+                    {
+                        if (!(pts.Length > 3)) return "Needs task id";
+                        List<int> affectedTasks = utilities.listStringSubset(utilities.countUp(0, selectedSession.serverList.Max(x => x.taskList.Count)), pts[3]);
+                        if (affectedServers == null) return "Invalid task id";
+                        foreach (server affected in affectedServers)
+                        {
+                            foreach (int taskID in affectedTasks)
+                            {
+                                if (!utilities.isInRange(0, affected.taskList.Count, taskID))
+                                    return "Server " + utilities.ipFromSshAddr(affected.sshAddress) + " did not have task id " + taskID;
+                                if (affected.taskList[taskID].status != "Stopped")
+                                    return "Cannot acknowledge the finishing of a task that is not finished. Server " + utilities.ipFromSshAddr(affected.sshAddress) + " with task id " + taskID;
+                            }
+                        }
+
+						foreach (server affected in affectedServers)
+						{
+							foreach (int taskID in affectedTasks)
+								affected.deleteTask(taskID);
+							Console.WriteLine("Acknowledged " + affectedTasks.Count + " task(s) from server: " + utilities.ipFromSshAddr(affected.sshAddress));
+						}
+                    } else {
+                        return "Unknown secondary modifier '" + pts[1] + "'";
+                    }
+                } else if(pts[0].ToLower() == "view")
+                {
+                    //if (serverSelected) return "Return from server view";
+                    if (!(pts.Length > 1)) return "Needs server id";
+                    if (!utilities.isInt(pts[1])) return "Invalid server id";
+                    int sid = Convert.ToInt32(pts[1]);
+                    if (!utilities.isInRange(0, selectedSession.serverList.Count, sid)) return "Invalid server id";
+                    if (!serverSelected) serverSelected = true;
+                    selectedServer = sid;
+                } else if(pts[0].ToLower() == "return")
+                {
+                    if (!serverSelected) return "You are not in server view mode";
+                    if (serverSelected) serverSelected = false;
                 }
+                return "OK";
             }
 
             public void updateBridge(Object source, ElapsedEventArgs e)
@@ -412,6 +444,45 @@ namespace shcren
 				if (l > i) return false;
 				return true;
 			}
+
+            public static bool isInt(string istring)
+            {
+                int i;
+                return int.TryParse(istring, out i);
+            }
+
+            public static List<T> listStringSubset<T>(List<T> s, string userIn)
+            {
+                if (userIn.ToLower() == "all")
+                    return s;
+                List<T> ret = new List<T>();
+                if(userIn.Contains(","))
+                {
+                    //CSV input
+                    string[] shouldInts = userIn.Split(',');
+                    foreach (string posInt in shouldInts)
+                    {
+                        if(!isInt(posInt)) return null;
+                        int i = Convert.ToInt32(posInt);
+                        if (!isInRange(0, s.Count, i)) return null;
+                        ret.Add(s[i]);
+                    }
+                    return ret;
+                } else if(isInt(userIn))
+                {
+                    ret.Add(s[Convert.ToInt32(userIn)]);
+                    return ret;
+                }
+                return null;
+            }
+
+            public static List<int> countUp(int start, int stop)
+            {
+                List<int> ret = new List<int>();
+                for (int i = start; i < stop; i++)
+                    ret.Add(i);
+                return ret;
+            }
         }
 
 		public static class ui
